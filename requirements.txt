@@ -1,0 +1,16 @@
+torch
+transformers
+datasets
+lighteval[math,extended_tasks]
+accelerate
+transformer-engine
+bitsandbytes
+hf_transfer
+
+matplotlib
+termcolor
+wandb
+
+pandas
+pyarrow
+cudf-cu12
