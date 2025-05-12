@@ -43,7 +43,6 @@ def main():
         top_k=20,
     )
 
-    # model_name = "Qwen/Qwen3-30B-A3B"
     model_name = "Qwen/Qwen3-0.6B"
     model_config = TransformersModelConfig(
         pretrained=model_name,
@@ -51,10 +50,7 @@ def main():
         model_parallel=True,
         compile=True,
         device="cuda",
-        dtype=torch.bfloat16,
-        # quantization_config=BitsAndBytesConfig(
-        #     load_in_8bit=True
-        # ),
+        dtype="auto",
         use_chat_template=True,
         generation_parameters=generation_parameters,
     )
@@ -73,10 +69,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-# lighteval accelerate \
-#     "pretrained=Qwen/QwQ-32B,quantization_config=BitsAndBytesConfig(load_in_8bit=True)" \
-#     "leaderboard|hellaswag|10|1,leaderboard|gsm8k|3|1"
 
 
 
