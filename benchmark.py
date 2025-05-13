@@ -15,7 +15,7 @@ random.seed(420)
 np.random.seed(42)
 
 model_name = "Qwen/Qwen3-0.6B"
-stop_threshold = 0  # set to 0 to disable stopping
+stop_threshold = 0.15  # set to 0 to disable stopping
 warmup_lines = 4
 statement_terminators = [
     "\n", "\n\n", "\n\n\n", "\n\n\n\n", "\n\n\n\n\n", "\n\n\n\n\n\n",
@@ -26,6 +26,39 @@ statement_terminators = [
     "!\n", "!\n\n", "!\n\n\n", "!\n\n\n\n",
     "?\n", "?\n\n", "?\n\n\n", "?\n\n\n\n",
 ]
+
+
+def extract_boxed_content(text):
+    """Extract content from \boxed{} expressions, handling nested braces correctly."""
+    results = []
+    i = 0
+    while i < len(text):
+        # Find the start of a boxed expression
+        boxed_start = text.find("\\boxed{", i)
+        if boxed_start == -1:
+            break
+            
+        # Find the matching closing brace
+        brace_start = boxed_start + len("\\boxed{")
+        brace_level = 1
+        brace_end = brace_start
+        
+        while brace_level > 0 and brace_end < len(text):
+            if text[brace_end] == '{':
+                brace_level += 1
+            elif text[brace_end] == '}':
+                brace_level -= 1
+            brace_end += 1
+        
+        if brace_level == 0:
+            # Successfully found the matching closing brace
+            content = text[brace_start:brace_end-1]
+            results.append(content)
+            
+        # Move past this boxed expression
+        i = brace_end
+        
+    return results
 
 
 def run_benchmark(dataset, num_samples=None, output_file="benchmark_results.parquet"):
@@ -102,9 +135,8 @@ def run_benchmark(dataset, num_samples=None, output_file="benchmark_results.parq
             thinking_content = ""
             response_content = generated_text.strip()
         
-        # Extract answer from \boxed{} tags
-        boxed_pattern = r'\\boxed{([^}]*)}'
-        boxed_match = re.findall(boxed_pattern, response_content)
+        # Extract answer from \boxed{} tags using the custom function
+        boxed_match = extract_boxed_content(response_content)
         model_answer = boxed_match[-1].strip() if boxed_match else response_content.strip()
         
         # Calculate token statistics

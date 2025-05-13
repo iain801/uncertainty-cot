@@ -214,8 +214,6 @@ class EntropyQwenModel(GenerationMixin):
         self.terminator_token_ids = []
         self.terminator_id_to_type = {}  # Map from token ID to terminator type
         
-        
-        
         if self.verbose:
             print(f"Setting up statement terminators: {self.statement_terminators}")
             
@@ -257,6 +255,8 @@ class EntropyQwenModel(GenerationMixin):
                 logits_processor = []
             logits_processor.append(self.entropy_stopper)
             kwargs["logits_processor"] = logits_processor
+            
+        torch.compile(self.model)
     
     def to(self, device):
         """Move model to device"""
