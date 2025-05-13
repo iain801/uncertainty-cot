@@ -3,7 +3,6 @@ import time
 import sys
 import random
 import numpy as np
-import math
 import re
 from transformers import TextIteratorStreamer
 from termcolor import colored
@@ -19,8 +18,19 @@ random.seed(420)
 np.random.seed(42)
 
 model_name = "Qwen/Qwen3-0.6B"
-stop_threshold = 0.175
-show_stream = False
+stop_threshold = 0 # set to 0 to disable stopping
+warmup_lines = 4
+statement_terminators = [
+    "\n","\n\n","\n\n\n","\n\n\n\n","\n\n\n\n\n","\n\n\n\n\n\n",
+    "\n\n\n\n\n\n\n","\n\n\n\n\n\n\n\n","\n\n\n\n\n\n\n\n\n",
+    "\n\n\n\n\n\n\n\n\n\n","\n\n\n\n\n\n\n\n\n\n\n","\n\n\n\n\n\n\n\n\n\n\n\n",
+    " \n", " \n\n", " \n\n\n"," \n\n\n\n"," \n\n\n\n\n",
+    ".\n",".\n\n",".\n\n\n",".\n\n\n\n",".\n\n\n\n\n",
+    "!\n", "!\n\n", "!\n\n\n","!\n\n\n\n",
+    "?\n", "?\n\n", "?\n\n\n","?\n\n\n\n",
+]
+
+show_stream = True
 
 def get_probability_color(prob):
     """Return a color based on token probability"""
@@ -40,30 +50,58 @@ def is_empty_line(line):
     return not line or line.isspace()
 
 def split_into_sentences(text):
-    """Split text into sentences by periods and newlines
+    """Split text into sentences by statement terminators
     
     Handles cases like decimals, ellipses, etc. to avoid splitting incorrectly
     """
-    # First split by newlines
-    lines = text.split('\n')
+    # First split by newlines if newline is in the terminators
+    if "\n" in statement_terminators:
+        lines = text.split('\n')
+    else:
+        lines = [text]  # Just treat the whole text as one line
+        
     sentences = []
     
     for line in lines:
         if not line.strip():
             sentences.append(line)
             continue
-            
-        # Split by periods, but be careful with decimals, abbreviations, etc.
-        # This regex splits by periods that are followed by a space or end of string
-        # and not preceded by common abbreviations
-        fragments = re.split(r'(?<!\s[A-Z])(?<!\d)(?<!\.)\.(?=\s|$)', line)
         
-        for i, fragment in enumerate(fragments):
-            if i < len(fragments) - 1:
-                # Add the period back for all but the last fragment
-                sentences.append(fragment + '.')
-            else:
-                sentences.append(fragment)
+        # Start with the line as current text
+        current = line
+        
+        # Process each terminator in the list (except newline which was handled above)
+        for terminator in [t for t in statement_terminators if t != "\n"]:
+            if terminator in current:
+                if terminator == ".":
+                    # Special handling for periods to avoid splitting decimals, etc.
+                    fragments = re.split(r'(?<!\s[A-Z])(?<!\d)(?<!\.)\.(?=\s|$)', current)
+                    processed = []
+                    
+                    for i, fragment in enumerate(fragments):
+                        if i < len(fragments) - 1:
+                            # Add the period back for all but the last fragment
+                            processed.append(fragment + '.')
+                        else:
+                            processed.append(fragment)
+                    
+                    current = "\n".join(processed)  # Join with newlines to split again
+                else:
+                    # Simple splitting for other terminators
+                    parts = current.split(terminator)
+                    processed = []
+                    
+                    for i, part in enumerate(parts):
+                        if i < len(parts) - 1:
+                            # Add the terminator back for all but the last part
+                            processed.append(part + terminator)
+                        else:
+                            processed.append(part)
+                    
+                    current = "\n".join(processed)
+        
+        # Split by the newlines we added and add to sentences
+        sentences.extend([s for s in current.split("\n") if s])
     
     return sentences
 
@@ -74,25 +112,37 @@ class ProbabilityTracker:
         self.current_line_probs = []
         self.thinking_line_number = 0
         self.line_entropies = []
-        self.line_terminations = []  # 'period' or 'newline'
+        self.line_terminations = []  # Stores the terminator type for each line
+        self.last_line_real_entropy = 0.0  # Store the actual entropy from the model
     
     def add_probability(self, prob):
         self.token_probs.append(prob)
         self.current_line_probs.append(prob)
     
-    def new_line(self, termination_type='newline'):
+    def new_line(self, terminator_type=None):
         if self.current_line_probs:
-            entropy = model.calculate_entropy(self.current_line_probs)
-            self.line_entropies.append(entropy)
-            self.line_terminations.append(termination_type)
+            # Calculate entropy for visualization purposes only
+            visual_entropy = model.calculate_entropy(self.current_line_probs)
             
-            # Update the entropy stopper with the current line's entropy
-            # Use the actual token IDs from the model
-            token_id = model.period_token_id if termination_type == 'period' else model.newline_token_id
-            model.entropy_stopper.update_entropy(token_id, entropy)
+            # Use the actual entropy from the model's internal calculation if available
+            # Otherwise, fall back to the visualization entropy
+            displayed_entropy = self.last_line_real_entropy if hasattr(self, 'last_line_real_entropy') else visual_entropy
             
-            self.thinking_line_number += 1
+            self.line_entropies.append(displayed_entropy)
+            self.line_terminations.append(terminator_type or "unknown")
+            
+            # Get the actual line number from the entropy stopper if possible
+            if hasattr(model, 'entropy_stopper') and hasattr(model.entropy_stopper, 'line_count'):
+                self.thinking_line_number = model.entropy_stopper.line_count 
+            else:
+                # Fallback to our own counting (legacy)
+                self.thinking_line_number += 1
+                
             self.current_line_probs = []
+    
+    def set_real_entropy(self, entropy):
+        """Store the actual entropy calculated by the model"""
+        self.last_line_real_entropy = entropy
 
 def main():
     global model  # Make model available to ProbabilityTracker
@@ -103,8 +153,9 @@ def main():
         model_name=model_name,
         cache_dir="tmp/",
         entropy_threshold=stop_threshold,  # Entropy threshold for early stopping
-        min_line_tokens=3,      # Minimum tokens in a line to consider
-        num_warmup_lines=10,      # Number of lines to ignore before stopping
+        num_warmup_lines=warmup_lines,    # Number of lines to ignore before stopping
+        statement_terminators=statement_terminators,  # Pass the statement terminators
+        verbose=False  # Set to True for detailed debugging output
     )
 
     # Access the tokenizer from the model
@@ -118,7 +169,7 @@ def main():
         num_proc=10
     )
     sample = random.choice(dataset)
-    prompt = sample["problem"]
+    prompt = "Solve the following problem, seperating each step with a newline, then provide the solution in within a single \\boxed{} statement: \n" + sample["problem"]
     
     # prompt = "If a doctor gives you 3 pills and tells you to take one pill every half hour, how long would it last before you've taken all the pills?"
     messages = [
@@ -138,6 +189,10 @@ def main():
 
     # Create tracker
     prob_tracker = ProbabilityTracker()
+    final_response = ""
+    
+    # Connect the tracker to the model
+    model.set_prob_tracker(prob_tracker)
 
     # Choose different generation approaches based on streaming preference
     if show_stream:
@@ -158,8 +213,7 @@ def main():
                     top_p=0.95,    
                     temperature=0.6,
                     top_k=20,
-                    streamer=streamer,
-                    enable_entropy_stopping=False
+                    streamer=streamer
                 )
                 print(f"Generation completed with {len(output[0])} tokens")
             except Exception as e:
@@ -184,6 +238,7 @@ def main():
         current_buffer = ""  # Buffer to accumulate text for sentence splitting
         manually_stopped = False
         current_prob = 0.5  # Default probability for visualization
+        response_text = ""  # Track the response part separately
 
         try:
             for text_chunk in streamer:
@@ -198,10 +253,11 @@ def main():
                 prob_tracker.add_probability(current_prob)
                 prob_color = get_probability_color(current_prob)
                 
-                # Handle line tracking during thinking - process on periods and newlines
+                # Handle line tracking during thinking - process on terminators
                 if is_thinking:
-                    # Check if we have a potential line ending (period or newline)
-                    if '.' in current_buffer or '\n' in current_buffer:
+                    # Check if we have a potential line ending (any terminator)
+                    has_terminator = any(term in current_buffer for term in statement_terminators)
+                    if has_terminator:
                         # Split into sentences and process each one
                         sentences = split_into_sentences(current_buffer)
                         
@@ -211,22 +267,33 @@ def main():
                                 # For empty sentences, just print a newline without entropy info
                                 if is_empty_line(sentence):
                                     print()
-                                    prob_tracker.new_line('newline')
+                                    prob_tracker.new_line("\n")
                                     continue
                                 
                                 # Calculate line entropy for display
                                 line_entropy = model.calculate_entropy(prob_tracker.current_line_probs)
                                 
-                                # Determine termination type
-                                termination_type = 'period' if sentence.strip().endswith('.') else 'newline'
+                                # Use the actual entropy from the model's internal calculation if available
+                                displayed_entropy = prob_tracker.last_line_real_entropy if hasattr(prob_tracker, 'last_line_real_entropy') else line_entropy
+                                
+                                # Determine termination type based on statement terminators
+                                terminator_type = None
+                                sentence_stripped = sentence.strip()
+                                for terminator in statement_terminators:
+                                    if sentence_stripped.endswith(terminator):
+                                        terminator_type = terminator
+                                        break
+                                # Default to newline if no terminator found
+                                if terminator_type is None:
+                                    terminator_type = "\n"
                                 
                                 # Display sentence with entropy info
-                                line_info = f" [Line: {prob_tracker.thinking_line_number}, Entropy: {line_entropy:.4f}]"
+                                line_info = f" [Line: {prob_tracker.thinking_line_number}, Entropy: {displayed_entropy:.4f}, Tokens: {len(prob_tracker.current_line_probs)}]"
                                 print(colored(sentence, prob_color), end="", flush=True)
                                 print(colored(line_info, "cyan"), end="\n", flush=True)
                                 
                                 # Track new line
-                                prob_tracker.new_line(termination_type)
+                                prob_tracker.new_line(terminator_type)
                             
                             # Keep the last (potentially incomplete) sentence in the buffer
                             current_buffer = sentences[-1]
@@ -245,15 +312,20 @@ def main():
                         print(colored(thinking_part, prob_color), end="", flush=True)
                     if response_part:
                         print(response_part, end="", flush=True)
+                        # Start collecting the response text
+                        response_text += response_part
                 else:
                     # For regular chunk printing that doesn't involve complete sentences
-                    if is_thinking and '.' not in text_chunk and '\n' not in text_chunk:
-                        # Just print the chunk directly if it doesn't contain line endings
+                    no_terminators = not any(term in text_chunk for term in statement_terminators)
+                    if is_thinking and no_terminators:
+                        # Print the chunk directly if it doesn't contain line endings
                         print(colored(text_chunk, prob_color), end="", flush=True)
                         current_buffer = ""  # Already printed
                     elif not is_thinking and not manually_stopped:
                         # Print in default color (not colored) for final answer
                         print(text_chunk, end="", flush=True)
+                        # Continue collecting the response text
+                        response_text += text_chunk
                 
                 # Flush to ensure immediate output
                 sys.stdout.flush()
@@ -268,6 +340,9 @@ def main():
         generation_done.wait(timeout=60)  # Wait up to 60 seconds
         generation_time = time.time() - start_time
         print("\n[Generation Done]")
+        
+        # Set final_response to the accumulated response text
+        final_response = response_text
     
     else:
         # Non-streaming approach - simpler and more direct
@@ -281,8 +356,7 @@ def main():
                 do_sample=True,
                 top_p=0.95,    
                 temperature=0.6,
-                top_k=20,
-                enable_entropy_stopping=False
+                top_k=20
             )
             
             # Decode the generated tokens
@@ -306,10 +380,11 @@ def main():
             
             print("\n--- Generated Answer ---")
             if think_end_pos != -1:
-                answer = generated_text[think_end_pos + len(THINK_END_TAG):].strip()
-                print(answer)
+                final_response = generated_text[think_end_pos + len(THINK_END_TAG):].strip()
+                print(final_response)
             else:
-                print(generated_text)
+                final_response = generated_text
+                print(final_response)
                 
         except Exception as e:
             print(f"\nError during generation: {str(e)}")
@@ -317,6 +392,18 @@ def main():
             traceback.print_exc()
             generation_time = time.time() - start_time
     
+    # Extract answer from \boxed{} tags
+    boxed_pattern = r'\\boxed{([^}]*)}'
+    boxed_match = re.findall(boxed_pattern, final_response)
+    final_answer = boxed_match[-1].strip() if boxed_match else final_response.strip()
+    
+    # Log whether we found a boxed answer
+    if boxed_match:
+        print(f"\n--- Extracted Boxed Answer ---")
+    else:
+        print(f"\n--- No Boxed Answer Found, Using Full Response ---")
+    
+    print(f"{final_answer}")
     print(f"\n--- Correct Answer ---\n{sample['answer']}")
 
     # Find the thinking and response portions using the </think> tag
@@ -340,6 +427,7 @@ def main():
     print("\n\n--- Performance Metrics ---")
     print(f"Generation time: {generation_time:.2f} seconds")
     print(f"Thinking tokens: {thinking_tokens}")
+    print(f"Response tokens: {total_tokens - thinking_tokens}")
     print(f"Total tokens: {total_tokens}")
     print(f"Thinking percentage: {thinking_percentage:.2f}%")
     print(f"Generation speed: {tokens_per_second:.2f} tokens/second")
@@ -356,12 +444,29 @@ def main():
         plt.figure(figsize=(10, 5))
         plt.plot(range(1, len(prob_tracker.line_entropies) + 1), prob_tracker.line_entropies, '-b')
         
+        # Define marker styles dynamically based on terminators
+        # Use a set of default markers that will be assigned to terminators
+        default_markers = ["ko", "rx", "g^", "bs", "mD", "cP", "yh"]
+        marker_styles = {"unknown": "k*"}  # Default marker for unknown terminator
+        
+        # Assign markers to each terminator
+        for i, terminator in enumerate(statement_terminators):
+            marker_idx = min(i, len(default_markers) - 1)  # Avoid index out of range
+            marker_styles[terminator] = default_markers[marker_idx]
+        
         # Add markers for termination types
-        for i, (entropy, term_type) in enumerate(zip(prob_tracker.line_entropies, prob_tracker.line_terminations)):
-            if term_type == 'period':
-                plt.plot(i + 1, entropy, 'ko')  # black dot for period
-            else:
-                plt.plot(i + 1, entropy, 'rx')  # red x for newline
+        for i, (entropy, terminator) in enumerate(zip(prob_tracker.line_entropies, prob_tracker.line_terminations)):
+            # Get marker style for this terminator (or default to unknown marker)
+            marker = marker_styles.get(terminator, marker_styles["unknown"])
+            plt.plot(i + 1, entropy, marker)
+        
+        # Add legend for marker styles
+        for terminator, marker in marker_styles.items():
+            # Replace newline with \n for display
+            label = f"'{terminator.replace('\n', '\\n')}'"
+            if terminator == "unknown":
+                label = "unknown"
+            plt.plot([], [], marker, label=label)
         
         plt.axhline(y=stop_threshold, color='green', linestyle='--', label='Stopping Threshold')
         
