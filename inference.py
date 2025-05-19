@@ -9,17 +9,21 @@ from termcolor import colored
 from threading import Thread, Event
 from qwen_tropy import EntropyQwenModel
 import matplotlib.pyplot as plt
+from math_verify import verify, parse, LatexExtractionConfig, LatexNormalizationConfig
 
 import datasets
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
-random.seed(420)
+random.seed(42)
 np.random.seed(42)
 
 model_name = "Qwen/Qwen3-0.6B"
-stop_threshold = 0 # set to 0 to disable stopping
+stop_threshold = 0.00001 # set to 0 to disable stopping
 warmup_lines = 4
+show_stream = True
+
+
 statement_terminators = [
     "\n","\n\n","\n\n\n","\n\n\n\n","\n\n\n\n\n","\n\n\n\n\n\n",
     "\n\n\n\n\n\n\n","\n\n\n\n\n\n\n\n","\n\n\n\n\n\n\n\n\n",
@@ -29,8 +33,6 @@ statement_terminators = [
     "!\n", "!\n\n", "!\n\n\n","!\n\n\n\n",
     "?\n", "?\n\n", "?\n\n\n","?\n\n\n\n",
 ]
-
-show_stream = True
 
 def get_probability_color(prob):
     """Return a color based on token probability"""
@@ -161,6 +163,23 @@ def main():
     # Access the tokenizer from the model
     tokenizer = model.tokenizer
 
+    # Configure Math-Verify for answer verification
+    normalization_config = LatexNormalizationConfig(
+        basic_latex=True,
+        units=True,
+        malformed_operators=True,
+        nits=True,
+        boxed="all",
+        equations=True
+    )
+    
+    # Configure Math-Verify for latex extraction
+    latex_config = LatexExtractionConfig(    
+        try_extract_without_anchor=True,
+        boxed_match_priority=0,
+        normalization_config=normalization_config
+    )
+
     # prepare the model input
     dataset = datasets.load_dataset(
         path="HuggingFaceH4/MATH-500",
@@ -190,6 +209,7 @@ def main():
     # Create tracker
     prob_tracker = ProbabilityTracker()
     final_response = ""
+    response_content = ""
     
     # Connect the tracker to the model
     model.set_prob_tracker(prob_tracker)
@@ -314,18 +334,16 @@ def main():
                         print(response_part, end="", flush=True)
                         # Start collecting the response text
                         response_text += response_part
-                else:
+                elif not is_thinking:
                     # For regular chunk printing that doesn't involve complete sentences
-                    no_terminators = not any(term in text_chunk for term in statement_terminators)
-                    if is_thinking and no_terminators:
-                        # Print the chunk directly if it doesn't contain line endings
-                        print(colored(text_chunk, prob_color), end="", flush=True)
-                        current_buffer = ""  # Already printed
-                    elif not is_thinking and not manually_stopped:
-                        # Print in default color (not colored) for final answer
-                        print(text_chunk, end="", flush=True)
-                        # Continue collecting the response text
-                        response_text += text_chunk
+                    # Print in default color (not colored) for final answer
+                    print(text_chunk, end="", flush=True)
+                    # Continue collecting the response text
+                    response_text += text_chunk
+                elif not manually_stopped and not has_terminator:
+                    # Print the chunk directly if it doesn't contain line endings
+                    print(colored(text_chunk, prob_color), end="", flush=True)
+                    current_buffer = ""  # Already printed
                 
                 # Flush to ensure immediate output
                 sys.stdout.flush()
@@ -343,6 +361,7 @@ def main():
         
         # Set final_response to the accumulated response text
         final_response = response_text
+        response_content = response_text
     
     else:
         # Non-streaming approach - simpler and more direct
@@ -381,9 +400,11 @@ def main():
             print("\n--- Generated Answer ---")
             if think_end_pos != -1:
                 final_response = generated_text[think_end_pos + len(THINK_END_TAG):].strip()
+                response_content = final_response
                 print(final_response)
             else:
                 final_response = generated_text
+                response_content = final_response
                 print(final_response)
                 
         except Exception as e:
@@ -393,6 +414,39 @@ def main():
             generation_time = time.time() - start_time
     
     # Extract answer from \boxed{} tags
+    print("\n--- Answer Verification ---")
+    
+    # Parse and verify the model answer and ground truth using Math-Verify
+    try:
+        model_answer = parse(response_content, [latex_config])
+        if model_answer:
+            print(f"Parsed model answer: {model_answer[0]}")
+        else:
+            print("Failed to parse model answer")
+            model_answer = response_content
+    except Exception as e:
+        print(f"Error parsing answer: {e}")
+        model_answer = response_content
+        
+    try:
+        gold_answer = parse(f"\\boxed{{{sample['answer']}}}", [latex_config])
+        if gold_answer:
+            print(f"Parsed gold answer: {gold_answer[0]}")
+        else:
+            print("Failed to parse gold answer")
+            gold_answer = sample["answer"]
+    except Exception as e:
+        print(f"Error parsing gold answer: {e}")
+        gold_answer = sample["answer"]
+    
+    try:
+        is_correct = verify(gold_answer, model_answer)
+        print(f"Answer is correct: {is_correct}")
+    except Exception as e:
+        print(f"Error during verification: {e}")
+        is_correct = False
+    
+    # Extract boxed answer for display
     boxed_pattern = r'\\boxed{([^}]*)}'
     boxed_match = re.findall(boxed_pattern, final_response)
     final_answer = boxed_match[-1].strip() if boxed_match else final_response.strip()
@@ -474,7 +528,7 @@ def main():
         plt.ylabel('Entropy')
         plt.title('Entropy at Each Reasoning Step')
         plt.grid(True, linestyle='--', alpha=0.7)
-        plt.legend()
+        # plt.legend()
         
         # Save the plot
         plt.savefig('visualization_entropy.png')

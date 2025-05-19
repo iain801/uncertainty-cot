@@ -232,8 +232,6 @@ class EntropyQwenModel(GenerationMixin):
             elif self.verbose:
                 print(f"  Warning: Terminator '{terminator}' could not be encoded to token IDs")
         
-        print(f"terminator_token_ids: {self.terminator_token_ids}")
-        
         # Create entropy stopper
         self.entropy_stopper = EntropyCoTStopper(
             entropy_threshold=self.entropy_threshold,
@@ -247,14 +245,6 @@ class EntropyQwenModel(GenerationMixin):
         
         # Pass the terminator_id_to_type mapping to the stopper
         self.entropy_stopper.terminator_id_to_type = self.terminator_id_to_type
-        
-        # Set up logits processor for entropy-based stopping
-        if entropy_threshold > 0:
-            logits_processor = kwargs.get("logits_processor", [])
-            if not isinstance(logits_processor, list):
-                logits_processor = []
-            logits_processor.append(self.entropy_stopper)
-            kwargs["logits_processor"] = logits_processor
             
         torch.compile(self.model)
     
@@ -281,6 +271,13 @@ class EntropyQwenModel(GenerationMixin):
             enable_entropy_stopping: Whether to use entropy-based stopping
             **kwargs: Additional arguments to pass to model.generate()
         """
+        
+        if self.entropy_threshold > 0:
+            logits_processor = kwargs.get("logits_processor", [])
+            if not isinstance(logits_processor, list):
+                logits_processor = []
+            logits_processor.append(self.entropy_stopper)
+            kwargs["logits_processor"] = logits_processor
             
         # Call the model's generate method
         return self.model.generate(input_ids, **kwargs)

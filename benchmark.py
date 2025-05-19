@@ -5,9 +5,11 @@ import random
 import numpy as np
 import re
 import pandas as pd
+import os
 from tqdm import tqdm
 from qwen_tropy import EntropyQwenModel
 import datasets
+from math_verify import verify, parse, LatexExtractionConfig, LatexNormalizationConfig
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
@@ -61,18 +63,31 @@ def extract_boxed_content(text):
     return results
 
 
-def run_benchmark(dataset, num_samples=None, output_file="benchmark_results.parquet"):
+def run_benchmark(dataset, dataset_name, num_samples=None, output_file=None):
     """
     Run the benchmark on the provided dataset
     
     Args:
         dataset: The dataset to benchmark
+        dataset_name: Name of the dataset
         num_samples: Number of samples to process (None for all)
-        output_file: Path to save the results
+        output_file: Path to save the results (if None, a path will be generated)
         
     Returns:
         DataFrame with benchmark results
     """
+    # Format the model name to be directory-friendly
+    safe_model_name = model_name.replace("/", "_")
+    
+    # Generate timestamp for unique filenames
+    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    
+    # Create output directories if they don't exist
+    if output_file is None:
+        results_dir = f"results/{safe_model_name}/{dataset_name}"
+        os.makedirs(results_dir, exist_ok=True)
+        output_file = f"{results_dir}/benchmark_{stop_threshold}_{timestamp}.parquet"
+    
     print(f"Loading model {model_name}...")
     model = EntropyQwenModel(
         model_name=model_name,
@@ -91,6 +106,22 @@ def run_benchmark(dataset, num_samples=None, output_file="benchmark_results.parq
     
     # Results storage
     results = []
+    
+    normalization_config = LatexNormalizationConfig(
+        basic_latex=True,
+        units=True,
+        malformed_operators=True,
+        nits=True,
+        boxed="all",
+        equations=True
+    )
+    
+    # Configure Math-Verify for latex extraction
+    latex_config = LatexExtractionConfig(    
+        try_extract_without_anchor=True,
+        boxed_match_priority=0,
+        normalization_config=normalization_config
+    )
     
     # Process each sample with progress bar
     for sample in tqdm(dataset, desc="Processing samples"):
@@ -135,25 +166,34 @@ def run_benchmark(dataset, num_samples=None, output_file="benchmark_results.parq
             thinking_content = ""
             response_content = generated_text.strip()
         
-        # Extract answer from \boxed{} tags using the custom function
-        boxed_match = extract_boxed_content(response_content)
-        model_answer = boxed_match[-1].strip() if boxed_match else response_content.strip()
-        
         # Calculate token statistics
         thinking_tokens = len(tokenizer.encode(thinking_content)) if thinking_content else 0
         response_tokens = len(tokenizer.encode(response_content)) if response_content else 0
         total_tokens = thinking_tokens + response_tokens
         tokens_per_second = total_tokens / generation_time if generation_time > 0 else 0
         
-        # Determine if the answer is correct
-        is_correct = model_answer.lower() == sample["answer"].lower()
+        try:
+            model_answer = parse(response_content, [latex_config])
+        except Exception as e:
+            print(f"Error parsing answer: {e}")
+            model_answer = response_content
+            
+        try:
+            gold_answer = parse(f"\\boxed{{{sample['answer']}}}", [latex_config])
+        except Exception as e:
+            print(f"Error parsing gold answer: {e}")
+            gold_answer = sample["answer"]
         
+        is_correct = verify(
+            gold_answer, model_answer
+        )
+                
         # Store the results
         results.append({
             "problem_id": sample.get("id", f"sample_{len(results)}"),
             "problem": sample["problem"],
-            "generated_answer": model_answer,
-            "correct_answer": sample["answer"],
+            "generated_answer": str(model_answer[0]) if isinstance(model_answer, list) and len(model_answer) > 0 else str(model_answer),
+            "correct_answer": str(gold_answer[0]) if isinstance(gold_answer, list) and len(gold_answer) > 0 else str(gold_answer),
             "is_correct": is_correct,
             "thinking_tokens": thinking_tokens,
             "response_tokens": response_tokens,
@@ -183,10 +223,14 @@ def run_benchmark(dataset, num_samples=None, output_file="benchmark_results.parq
 
 
 def main():
+    # Dataset name and path
+    dataset_path = "HuggingFaceH4/MATH-500"
+    dataset_name = "MATH-500"
+    
     # Load dataset
-    print("Loading MATH-500 dataset...")
+    print(f"Loading dataset {dataset_name}...")
     dataset = datasets.load_dataset(
-        path="HuggingFaceH4/MATH-500",
+        path=dataset_path,
         split="test",
         cache_dir="tmp/",
         num_proc=10
@@ -201,12 +245,8 @@ def main():
             print(f"Invalid number of samples: {sys.argv[1]}")
             sys.exit(1)
     
-    # Generate output filename with timestamp
-    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    output_file = f"results/benchmark_{model_name.replace('/', '_')}_{timestamp}.parquet"
-    
-    # Run benchmark
-    run_benchmark(dataset, num_samples=num_samples, output_file=output_file)
+    # Run benchmark with new directory structure
+    run_benchmark(dataset, dataset_name, num_samples=num_samples)
 
 
 if __name__ == "__main__":
