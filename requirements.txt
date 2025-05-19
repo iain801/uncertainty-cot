@@ -7,6 +7,8 @@ transformer-engine
 bitsandbytes
 hf_transfer
 
+math-verify[antlr4_13_2]
+
 matplotlib
 termcolor
 wandb

@@ -1,5 +1,5 @@
+import numpy as np
 import torch
-import math
 from typing import List, Optional, Union
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.generation.utils import GenerationMixin
@@ -76,10 +76,11 @@ class EntropyCoTStopper(LogitsProcessor):
 
         # Avoid log(0) by adding a small epsilon
         epsilon = 1e-20
-
-        # Calculate the sum of p * log(p)
-        entropy_sum = sum(p * math.log(p + epsilon) for p in probabilities)
-
+        
+        # Vectorized calculation using numpy for better performance
+        probs = np.array(probabilities)
+        entropy_sum = np.sum(probs * np.log2(probs + epsilon))
+        
         # Normalize by log(n) to get a value between 0 and 1
         normalized_entropy = -1.0 * entropy_sum / (n + epsilon)
 

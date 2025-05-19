@@ -6,6 +6,7 @@ import numpy as np
 import re
 import pandas as pd
 import os
+import argparse
 from tqdm import tqdm
 from qwen_tropy import EntropyQwenModel
 import datasets
@@ -13,12 +14,16 @@ from math_verify import verify, parse, LatexExtractionConfig, LatexNormalization
 
 # Set random seed for reproducibility
 torch.manual_seed(42)
-random.seed(420)
+random.seed(42)
 np.random.seed(42)
 
-model_name = "Qwen/Qwen3-0.6B"
-stop_threshold = 0.15  # set to 0 to disable stopping
-warmup_lines = 4
+# Default values (will be overridden by command-line arguments)
+DEFAULT_MODEL_NAME = "Qwen/Qwen3-0.6B"
+DEFAULT_STOP_THRESHOLD = 0  # set to 0 to disable stopping
+DEFAULT_WARMUP_LINES = 4
+DEFAULT_DATASET_PATH = "HuggingFaceH4/MATH-500"
+DEFAULT_DATASET_NAME = "MATH-500"
+
 statement_terminators = [
     "\n", "\n\n", "\n\n\n", "\n\n\n\n", "\n\n\n\n\n", "\n\n\n\n\n\n",
     "\n\n\n\n\n\n\n", "\n\n\n\n\n\n\n\n", "\n\n\n\n\n\n\n\n\n",
@@ -63,15 +68,20 @@ def extract_boxed_content(text):
     return results
 
 
-def run_benchmark(dataset, dataset_name, num_samples=None, output_file=None):
+def run_benchmark(dataset, dataset_name, model_name, stop_threshold, warmup_lines, 
+                 num_samples=None, output_file=None, verbose=False):
     """
     Run the benchmark on the provided dataset
     
     Args:
         dataset: The dataset to benchmark
         dataset_name: Name of the dataset
+        model_name: Name of the model to use
+        stop_threshold: Entropy threshold for early stopping
+        warmup_lines: Number of lines to ignore before stopping
         num_samples: Number of samples to process (None for all)
         output_file: Path to save the results (if None, a path will be generated)
+        verbose: Whether to print detailed logs
         
     Returns:
         DataFrame with benchmark results
@@ -95,7 +105,7 @@ def run_benchmark(dataset, dataset_name, num_samples=None, output_file=None):
         entropy_threshold=stop_threshold,
         num_warmup_lines=warmup_lines,
         statement_terminators=statement_terminators,
-        verbose=False
+        verbose=verbose
     )
     
     tokenizer = model.tokenizer
@@ -184,9 +194,13 @@ def run_benchmark(dataset, dataset_name, num_samples=None, output_file=None):
             print(f"Error parsing gold answer: {e}")
             gold_answer = sample["answer"]
         
-        is_correct = verify(
-            gold_answer, model_answer
-        )
+        try:
+            is_correct = verify(
+                gold_answer, model_answer
+            )
+        except Exception as e:
+            print(f"Error during verification: {e}")
+            is_correct = False
                 
         # Store the results
         results.append({
@@ -223,30 +237,92 @@ def run_benchmark(dataset, dataset_name, num_samples=None, output_file=None):
 
 
 def main():
-    # Dataset name and path
-    dataset_path = "HuggingFaceH4/MATH-500"
-    dataset_name = "MATH-500"
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Run benchmarks on models with entropy-based early stopping")
+    
+    # Add arguments
+    parser.add_argument(
+        "--model", 
+        "-m",
+        type=str, 
+        default=DEFAULT_MODEL_NAME,
+        help=f"Model name (default: {DEFAULT_MODEL_NAME})"
+    )
+    parser.add_argument(
+        "--threshold", 
+        "-t",
+        type=float, 
+        default=DEFAULT_STOP_THRESHOLD,
+        help=f"Entropy threshold for early stopping (default: {DEFAULT_STOP_THRESHOLD}, 0 to disable)"
+    )
+    parser.add_argument(
+        "--warmup", 
+        "-w",
+        type=int, 
+        default=DEFAULT_WARMUP_LINES,
+        help=f"Number of lines to ignore before stopping (default: {DEFAULT_WARMUP_LINES})"
+    )
+    parser.add_argument(
+        "--dataset-path", 
+        "-d",
+        type=str, 
+        default=DEFAULT_DATASET_PATH,
+        help=f"Path to dataset (default: {DEFAULT_DATASET_PATH})"
+    )
+    parser.add_argument(
+        "--dataset-name", 
+        type=str, 
+        default=None,
+        help=f"Name of dataset (default: derived from dataset path)"
+    )
+    parser.add_argument(
+        "--samples", 
+        "-n",
+        type=int, 
+        default=None,
+        help="Number of samples to process (default: all)"
+    )
+    parser.add_argument(
+        "--output", 
+        "-o",
+        type=str, 
+        default=None,
+        help="Output file path (default: auto-generated)"
+    )
+    parser.add_argument(
+        "--verbose", 
+        "-v",
+        action="store_true",
+        help="Enable verbose output"
+    )
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # If dataset name not provided, derive it from the path
+    if args.dataset_name is None:
+        args.dataset_name = args.dataset_path.split('/')[-1]
     
     # Load dataset
-    print(f"Loading dataset {dataset_name}...")
+    print(f"Loading dataset {args.dataset_name} from {args.dataset_path}...")
     dataset = datasets.load_dataset(
-        path=dataset_path,
+        path=args.dataset_path,
         split="test",
         cache_dir="tmp/",
         num_proc=10
     )
     
-    # Optional: Parse command line arguments for number of samples
-    num_samples = None
-    if len(sys.argv) > 1:
-        try:
-            num_samples = int(sys.argv[1])
-        except ValueError:
-            print(f"Invalid number of samples: {sys.argv[1]}")
-            sys.exit(1)
-    
-    # Run benchmark with new directory structure
-    run_benchmark(dataset, dataset_name, num_samples=num_samples)
+    # Run benchmark with parsed arguments
+    run_benchmark(
+        dataset=dataset,
+        dataset_name=args.dataset_name,
+        model_name=args.model,
+        stop_threshold=args.threshold,
+        warmup_lines=args.warmup,
+        num_samples=args.samples,
+        output_file=args.output,
+        verbose=args.verbose
+    )
 
 
 if __name__ == "__main__":
