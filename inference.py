@@ -7,7 +7,7 @@ import re
 from transformers import TextIteratorStreamer
 from termcolor import colored
 from threading import Thread, Event
-from qwen_tropy import EntropyQwenModel
+from qwen_tropy import EntropyQwenModel, ProbabilityTracker
 import matplotlib.pyplot as plt
 from math_verify import verify, parse, LatexExtractionConfig, LatexNormalizationConfig
 
@@ -21,11 +21,11 @@ np.random.seed(42)
 MODEL_NAME = "Qwen/Qwen3-0.6B"
 SAMPLE_INDEX = 25
 
-STOP_THRESHOLD = 1e-1 # set to 0 to disable stopping
+STOP_THRESHOLD = 1e-10 # set to 0 to disable stopping
 WARMUP_LINES = 10
 WITH_ROLLING_ENTROPY = True
 
-SHOW_STREAM = True
+SHOW_STREAM = False
 
 statement_terminators = [
     "\n","\n\n","\n\n\n","\n\n\n\n","\n\n\n\n\n","\n\n\n\n\n\n",
@@ -110,45 +110,6 @@ def split_into_sentences(text):
     
     return sentences
 
-# Custom tracker for visualization
-class ProbabilityTracker:
-    def __init__(self):
-        self.token_probs = []
-        self.current_line_probs = []
-        self.thinking_line_number = 0
-        self.line_entropies = []
-        self.line_terminations = []  # Stores the terminator type for each line
-        self.last_line_real_entropy = 0.0  # Store the actual entropy from the model
-    
-    def add_probability(self, prob):
-        self.token_probs.append(prob)
-        self.current_line_probs.append(prob)
-    
-    def new_line(self, terminator_type=None):
-        if self.current_line_probs:
-            # Calculate entropy for visualization purposes only
-            visual_entropy = model.calculate_entropy(self.current_line_probs)
-            
-            # Use the actual entropy from the model's internal calculation if available
-            # Otherwise, fall back to the visualization entropy
-            displayed_entropy = self.last_line_real_entropy if hasattr(self, 'last_line_real_entropy') else visual_entropy
-            
-            self.line_entropies.append(displayed_entropy)
-            self.line_terminations.append(terminator_type or "unknown")
-            
-            # Get the actual line number from the entropy stopper if possible
-            if hasattr(model, 'entropy_stopper') and hasattr(model.entropy_stopper, 'line_count'):
-                self.thinking_line_number = model.entropy_stopper.line_count 
-            else:
-                # Fallback to our own counting (legacy)
-                self.thinking_line_number += 1
-                
-            self.current_line_probs = []
-    
-    def set_real_entropy(self, entropy):
-        """Store the actual entropy calculated by the model"""
-        self.last_line_real_entropy = entropy
-
 def stream_sample(model, tokenizer, model_inputs, prob_tracker, statement_terminators):
     """Stream generate a sample with real-time visualization and processing."""
     generation_done = Event()
@@ -226,11 +187,8 @@ def stream_sample(model, tokenizer, model_inputs, prob_tracker, statement_termin
                                 prob_tracker.new_line("\n")
                                 continue
                             
-                            # Calculate line entropy for display
-                            line_entropy = model.calculate_entropy(prob_tracker.current_line_probs)
-                            
-                            # Use the actual entropy from the model's internal calculation if available
-                            displayed_entropy = prob_tracker.last_line_real_entropy if hasattr(prob_tracker, 'last_line_real_entropy') else line_entropy
+                            # Use the entropy value tracked by the model via prob_tracker
+                            displayed_entropy = prob_tracker.last_line_real_entropy
                             
                             # Determine termination type based on statement terminators
                             terminator_type = None
