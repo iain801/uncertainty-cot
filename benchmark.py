@@ -68,8 +68,9 @@ def extract_boxed_content(text):
     return results
 
 
-def run_benchmark(dataset, dataset_name, model_name, stop_threshold, warmup_lines, 
-                 num_samples=None, output_file=None, verbose=False):
+def run_benchmark(dataset, dataset_name, model_name, stop_threshold, window_size, 
+                 num_samples=None, output_file=None, verbose=False, 
+                 use_rolling_entropy=False):
     """
     Run the benchmark on the provided dataset
     
@@ -78,10 +79,11 @@ def run_benchmark(dataset, dataset_name, model_name, stop_threshold, warmup_line
         dataset_name: Name of the dataset
         model_name: Name of the model to use
         stop_threshold: Entropy threshold for early stopping
-        warmup_lines: Number of lines to ignore before stopping
+        window_size: Window size and warmup lines
         num_samples: Number of samples to process (None for all)
         output_file: Path to save the results (if None, a path will be generated)
         verbose: Whether to print detailed logs
+        use_rolling_entropy: Whether to use rolling window entropy
         
     Returns:
         DataFrame with benchmark results
@@ -94,18 +96,21 @@ def run_benchmark(dataset, dataset_name, model_name, stop_threshold, warmup_line
     
     # Create output directories if they don't exist
     if output_file is None:
+        # Add entropy details to output path
+        entropy_suffix = f"rolling{window_size}" if use_rolling_entropy else f"warmup{window_size}"
         results_dir = f"results/{safe_model_name}/{dataset_name}"
         os.makedirs(results_dir, exist_ok=True)
-        output_file = f"{results_dir}/benchmark_{stop_threshold}_{timestamp}.parquet"
+        output_file = f"{results_dir}/benchmark_{stop_threshold}_{entropy_suffix}_{timestamp}.parquet"
     
     print(f"Loading model {model_name}...")
     model = EntropyQwenModel(
         model_name=model_name,
         cache_dir="tmp/",
         entropy_threshold=stop_threshold,
-        num_warmup_lines=warmup_lines,
+        window_size=window_size,
         statement_terminators=statement_terminators,
-        verbose=verbose
+        verbose=verbose,
+        use_rolling_entropy=use_rolling_entropy
     )
     
     tokenizer = model.tokenizer
@@ -179,7 +184,7 @@ def run_benchmark(dataset, dataset_name, model_name, stop_threshold, warmup_line
         # Calculate token statistics
         thinking_tokens = len(tokenizer.encode(thinking_content)) if thinking_content else 0
         response_tokens = len(tokenizer.encode(response_content)) if response_content else 0
-        total_tokens = thinking_tokens + response_tokens
+        total_tokens = len(tokenizer.encode(generated_text))
         tokens_per_second = total_tokens / generation_time if generation_time > 0 else 0
         
         try:
@@ -256,11 +261,11 @@ def main():
         help=f"Entropy threshold for early stopping (default: {DEFAULT_STOP_THRESHOLD}, 0 to disable)"
     )
     parser.add_argument(
-        "--warmup", 
+        "--window", 
         "-w",
         type=int, 
         default=DEFAULT_WARMUP_LINES,
-        help=f"Number of lines to ignore before stopping (default: {DEFAULT_WARMUP_LINES})"
+        help=f"Window size and warmup lines (default: {DEFAULT_WARMUP_LINES})"
     )
     parser.add_argument(
         "--dataset-path", 
@@ -295,6 +300,12 @@ def main():
         action="store_true",
         help="Enable verbose output"
     )
+    parser.add_argument(
+        "--rolling", 
+        "-r",
+        action="store_true",
+        help="Use rolling average entropy"
+    )
     
     # Parse arguments
     args = parser.parse_args()
@@ -318,10 +329,11 @@ def main():
         dataset_name=args.dataset_name,
         model_name=args.model,
         stop_threshold=args.threshold,
-        warmup_lines=args.warmup,
+        window_size=args.window,
         num_samples=args.samples,
         output_file=args.output,
-        verbose=args.verbose
+        verbose=args.verbose,
+        use_rolling_entropy=args.rolling
     )
 
 

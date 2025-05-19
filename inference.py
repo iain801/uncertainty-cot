@@ -18,11 +18,14 @@ torch.manual_seed(42)
 random.seed(42)
 np.random.seed(42)
 
-model_name = "Qwen/Qwen3-0.6B"
-stop_threshold = 0.1 # set to 0 to disable stopping
-warmup_lines = 5
-show_stream = False
+MODEL_NAME = "Qwen/Qwen3-0.6B"
+SAMPLE_INDEX = 25
 
+STOP_THRESHOLD = 1e-1 # set to 0 to disable stopping
+WARMUP_LINES = 10
+WITH_ROLLING_ENTROPY = True
+
+SHOW_STREAM = True
 
 statement_terminators = [
     "\n","\n\n","\n\n\n","\n\n\n\n","\n\n\n\n\n","\n\n\n\n\n\n",
@@ -315,11 +318,6 @@ def generate_sample(model, tokenizer, model_inputs, prob_tracker, prompt):
         
         # Decode the generated tokens
         generated_text = tokenizer.decode(output[0][len(model_inputs.input_ids[0]):], skip_special_tokens=False)
-        
-        # Calculate probabilities for metrics (simplified since we're not streaming)
-        for _ in range(len(tokenizer.encode(generated_text))):
-            current_prob = 0.5 + (0.5 * random.random())  # Simulated probability
-            prob_tracker.add_probability(current_prob)
             
         generation_time = time.time() - start_time
         print(f"\n[Generation Done] Completed with {len(output[0])} tokens in {generation_time:.2f} seconds")
@@ -355,14 +353,15 @@ def main():
     global model  # Make model available to ProbabilityTracker
     
     # Initialize model
-    print(f"Loading model {model_name}...")
+    print(f"Loading model {MODEL_NAME}...")
     model = EntropyQwenModel(
-        model_name=model_name,
+        model_name=MODEL_NAME,
         cache_dir="tmp/",
-        entropy_threshold=stop_threshold,  # Entropy threshold for early stopping
-        num_warmup_lines=warmup_lines,    # Number of lines to ignore before stopping
+        entropy_threshold=STOP_THRESHOLD,  # Entropy threshold for early stopping
+        window_size=WARMUP_LINES,          # Window size (and number of warmup lines)
         statement_terminators=statement_terminators,  # Pass the statement terminators
-        verbose=False  # Set to True for detailed debugging output
+        verbose=False,                     # Set to True for detailed debugging output
+        use_rolling_entropy=WITH_ROLLING_ENTROPY # Use rolling window entropy
     )
 
     # Access the tokenizer from the model
@@ -392,10 +391,8 @@ def main():
         cache_dir="tmp/",
         num_proc=10
     )
-    sample = dataset[0]
+    sample = dataset[SAMPLE_INDEX]
     prompt = "Solve the following problem, seperating each step with a newline, then provide the solution in within a single \\boxed{} statement: \n" + sample["problem"]
-    
-    # prompt = "If a doctor gives you 3 pills and tells you to take one pill every half hour, how long would it last before you've taken all the pills?"
     messages = [
         {"role": "user", "content": prompt}
     ]
@@ -419,7 +416,7 @@ def main():
     model.set_prob_tracker(prob_tracker)
 
     # Choose different generation approaches based on streaming preference
-    if show_stream:
+    if SHOW_STREAM:
         generated_text, final_response, response_content, generation_time = stream_sample(
             model, tokenizer, model_inputs, prob_tracker, statement_terminators
         )
@@ -531,7 +528,7 @@ def main():
                 label = "unknown"
             plt.plot([], [], marker, label=label)
         
-        plt.axhline(y=stop_threshold, color='green', linestyle='--', label='Stopping Threshold')
+        plt.axhline(y=STOP_THRESHOLD, color='green', linestyle='--', label='Stopping Threshold')
         
         plt.xlabel('Reasoning Step')
         plt.ylabel('Entropy')
