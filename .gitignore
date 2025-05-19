@@ -49,3 +49,4 @@ ENV/
 # Project specific
 tmp/
 results/
+*.out
