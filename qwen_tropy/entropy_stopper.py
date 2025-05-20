@@ -159,3 +159,16 @@ class EntropyCoTStopper(LogitsProcessor):
         self.last_token_id = next_token_id
             
         return scores
+
+    def reset(self):
+        """Reset the state variables relevant to stopping between generations"""
+        self.last_token_entropy = None
+        self.should_force_stop = False
+        self.line_count = 0
+        self.current_line_probs = []
+        self.last_token_id = None
+        self.in_thinking_state = True
+        self.already_forced_stop = False
+        
+        if self.verbose:
+            print("DEBUG: EntropyCoTStopper has been reset for a new generation")

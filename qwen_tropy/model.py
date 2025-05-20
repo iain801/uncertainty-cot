@@ -55,9 +55,6 @@ class EntropyQwenModel(GenerationMixin):
         self.entropy_threshold = entropy_threshold
         self.window_size = window_size
         
-        # Set default statement terminators if none provided
-        self.statement_terminators = statement_terminators or [".", "\n"]
-        
         # Set up proper thinking tag
         self.thinking_tag = "</think>"
         self.thinking_tag_token_ids = self.tokenizer.encode(self.thinking_tag, add_special_tokens=False)
@@ -67,23 +64,31 @@ class EntropyQwenModel(GenerationMixin):
         self.terminator_id_to_type = {}  # Map from token ID to terminator type
         
         if self.verbose:
-            print(f"Setting up statement terminators: {self.statement_terminators}")
+            print(f"Setting up statement terminators:")
             
-        for terminator in self.statement_terminators:
-            token_ids = self.tokenizer.encode(terminator, add_special_tokens=False)
-            if token_ids:
-                # Use the first token ID if encoding returns multiple tokens
-                token_id = token_ids[0]
-                self.terminator_token_ids.append(token_id)
-                self.terminator_id_to_type[token_id] = terminator
-                if self.verbose:
-                    print(f"  Terminator '{terminator}' encoded to token ID: {token_id}")
-                    # Decode the token to verify
+        if statement_terminators:
+            for terminator in statement_terminators:
+                token_ids = self.tokenizer.encode(terminator, add_special_tokens=False)
+                if token_ids:
+                    # Use the first token ID if encoding returns multiple tokens
+                    token_id = token_ids[0]
+                    self.terminator_token_ids.append(token_id)
+                    self.terminator_id_to_type[token_id] = terminator
+                    if self.verbose:
+                        print(f"  Terminator '{terminator}' encoded to token ID: {token_id}")
+                        # Decode the token to verify
+                        decoded = self.tokenizer.decode([token_id])
+                        print(f"    Decodes back to: '{decoded}'")
+                elif self.verbose:
+                    print(f"  Warning: Terminator '{terminator}' could not be encoded to token IDs")
+        else:
+            self.terminator_token_ids = self.get_all_newline_token_ids()
+            if self.verbose:
+                for token_id in self.terminator_token_ids:
+                    print(f"  Terminator token ID: {token_id}")
                     decoded = self.tokenizer.decode([token_id])
                     print(f"    Decodes back to: '{decoded}'")
-            elif self.verbose:
-                print(f"  Warning: Terminator '{terminator}' could not be encoded to token IDs")
-        
+
         # Create appropriate entropy stopper based on configuration
         if use_rolling_entropy:
             # Use the rolling entropy stopper with the window size
@@ -137,6 +142,8 @@ class EntropyQwenModel(GenerationMixin):
             enable_entropy_stopping: Whether to use entropy-based stopping
             **kwargs: Additional arguments to pass to model.generate()
         """
+        # Reset the generation state for a fresh start
+        self.reset_generation_state()
         
         if self.entropy_threshold > 0:
             logits_processor = kwargs.get("logits_processor", [])
@@ -181,8 +188,21 @@ class EntropyQwenModel(GenerationMixin):
             
     def get_all_newline_token_ids(self):
         """Get all newline token IDs"""
-        newline_token_ids = []
-        for token, token_id in self.tokenizer.vocab.items():
-            if "\n" in token:
-                newline_token_ids.append(token_id)
-        return newline_token_ids
+        # Get the complete vocabulary dictionary
+        vocab = self.tokenizer.get_vocab()
+        newline_tokens = {token: token_id for token, token_id in vocab.items() 
+                         if '\n' in token}
+        
+        return list(newline_tokens.values())
+
+    def reset_generation_state(self):
+        """Reset the internal state of the entropy stopper for a new generation"""
+        if hasattr(self, 'entropy_stopper') and self.entropy_stopper is not None:
+            self.entropy_stopper.reset()
+            if self.verbose:
+                print(f"Reset entropy stopper state for new generation")
+            
+        # Also reset any tracker if connected
+        if hasattr(self.entropy_stopper, 'prob_tracker') and self.entropy_stopper.prob_tracker is not None:
+            # Reset tracking state
+            self.entropy_stopper.prob_tracker.reset()

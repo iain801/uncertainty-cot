@@ -1,9 +1,7 @@
 import torch
 import time
-import sys
 import random
 import numpy as np
-import re
 import pandas as pd
 import os
 import argparse
@@ -19,10 +17,9 @@ np.random.seed(42)
 
 # Default values (will be overridden by command-line arguments)
 DEFAULT_MODEL_NAME = "Qwen/Qwen3-0.6B"
-DEFAULT_STOP_THRESHOLD = 0  # set to 0 to disable stopping
-DEFAULT_WARMUP_LINES = 4
+DEFAULT_STOP_THRESHOLD = 0.0  # set to 0 to disable stopping
+DEFAULT_WARMUP_LINES = 10
 DEFAULT_DATASET_PATH = "HuggingFaceH4/MATH-500"
-DEFAULT_DATASET_NAME = "MATH-500"
 
 statement_terminators = [
     "\n", "\n\n", "\n\n\n", "\n\n\n\n", "\n\n\n\n\n", "\n\n\n\n\n\n",
@@ -33,40 +30,6 @@ statement_terminators = [
     "!\n", "!\n\n", "!\n\n\n", "!\n\n\n\n",
     "?\n", "?\n\n", "?\n\n\n", "?\n\n\n\n",
 ]
-
-
-def extract_boxed_content(text):
-    """Extract content from \boxed{} expressions, handling nested braces correctly."""
-    results = []
-    i = 0
-    while i < len(text):
-        # Find the start of a boxed expression
-        boxed_start = text.find("\\boxed{", i)
-        if boxed_start == -1:
-            break
-            
-        # Find the matching closing brace
-        brace_start = boxed_start + len("\\boxed{")
-        brace_level = 1
-        brace_end = brace_start
-        
-        while brace_level > 0 and brace_end < len(text):
-            if text[brace_end] == '{':
-                brace_level += 1
-            elif text[brace_end] == '}':
-                brace_level -= 1
-            brace_end += 1
-        
-        if brace_level == 0:
-            # Successfully found the matching closing brace
-            content = text[brace_start:brace_end-1]
-            results.append(content)
-            
-        # Move past this boxed expression
-        i = brace_end
-        
-    return results
-
 
 def run_benchmark(dataset, dataset_name, model_name, stop_threshold, window_size, 
                  num_samples=None, output_file=None, verbose=False, 
@@ -103,6 +66,7 @@ def run_benchmark(dataset, dataset_name, model_name, stop_threshold, window_size
         output_file = f"{results_dir}/benchmark_{stop_threshold}_{entropy_suffix}_{timestamp}.parquet"
     
     print(f"Loading model {model_name}...")
+    
     model = EntropyQwenModel(
         model_name=model_name,
         cache_dir="tmp/",
@@ -112,7 +76,6 @@ def run_benchmark(dataset, dataset_name, model_name, stop_threshold, window_size
         verbose=verbose,
         use_rolling_entropy=use_rolling_entropy
     )
-    
     tokenizer = model.tokenizer
     
     # Limit the number of samples if requested
@@ -167,25 +130,30 @@ def run_benchmark(dataset, dataset_name, model_name, stop_threshold, window_size
         
         generation_time = time.time() - start_time
         
-        # Decode the generated text
-        generated_text = tokenizer.decode(output[0][len(model_inputs.input_ids[0]):], skip_special_tokens=False)
+        # Get the generated token IDs
+        generated_token_ids = output[0][len(model_inputs.input_ids[0]):]
         
-        # Find the thinking and response portions
-        THINK_END_TAG = "</think>"
-        think_end_pos = generated_text.find(THINK_END_TAG)
-        
-        if think_end_pos != -1:
-            thinking_content = generated_text[:think_end_pos].strip()
-            response_content = generated_text[think_end_pos + len(THINK_END_TAG):].strip()
-        else:
-            thinking_content = ""
-            response_content = generated_text.strip()
-        
-        # Calculate token statistics
-        thinking_tokens = len(tokenizer.encode(thinking_content)) if thinking_content else 0
-        response_tokens = len(tokenizer.encode(response_content)) if response_content else 0
-        total_tokens = len(tokenizer.encode(generated_text))
+        # Find the thinking and response portions using token ID
+        THINK_END_TOKEN = 151668
+        try:
+            think_end_pos = generated_token_ids.tolist().index(THINK_END_TOKEN)
+            thinking_tokens = think_end_pos
+            response_tokens = len(generated_token_ids) - think_end_pos - 1
+        except ValueError:
+            thinking_tokens = 0
+            response_tokens = len(generated_token_ids)
+            
+        total_tokens = len(generated_token_ids)
         tokens_per_second = total_tokens / generation_time if generation_time > 0 else 0
+        
+        # Decode the generated text
+        generated_text = tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+        
+        # Split content based on token position
+        if think_end_pos != -1:
+            response_content = tokenizer.decode(generated_token_ids[think_end_pos + 1:]).strip()
+        else:
+            response_content = generated_text.strip()
         
         try:
             model_answer = parse(response_content, [latex_config])

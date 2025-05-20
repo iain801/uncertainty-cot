@@ -60,3 +60,14 @@ class RollingEntropyCoTStopper(EntropyCoTStopper):
                     else:
                         if self.verbose and not self.already_forced_stop:
                             print(f"Not stopping - line count: {self.line_count}, window needed: {self.window_size}") 
+
+    def reset(self):
+        """Reset the state variables relevant to stopping between generations"""
+        # Reset parent class variables
+        super().reset()
+        
+        # Reset rolling entropy window
+        self.entropy_window = []
+        
+        if self.verbose:
+            print("DEBUG: RollingEntropyCoTStopper's entropy window has been reset") 

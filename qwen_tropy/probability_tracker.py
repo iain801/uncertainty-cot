@@ -51,3 +51,12 @@ class ProbabilityTracker:
     def get_line_count(self):
         """Get the current thinking line count"""
         return self.thinking_line_number 
+
+    def reset(self):
+        """Reset tracker state for a new generation"""
+        self.token_probs = []
+        self.current_line_probs = []
+        self.thinking_line_number = 0
+        self.line_entropies = []
+        self.line_terminations = []
+        self.last_line_real_entropy = 0.0 

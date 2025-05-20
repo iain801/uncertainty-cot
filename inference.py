@@ -19,9 +19,9 @@ random.seed(42)
 np.random.seed(42)
 
 MODEL_NAME = "Qwen/Qwen3-0.6B"
-SAMPLE_INDEX = 25
+SAMPLE_INDEX = 2
 
-STOP_THRESHOLD = 1e-10 # set to 0 to disable stopping
+STOP_THRESHOLD = 5e-1 # set to 0 to disable stopping
 WARMUP_LINES = 10
 WITH_ROLLING_ENTROPY = True
 
