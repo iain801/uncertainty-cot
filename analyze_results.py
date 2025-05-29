@@ -568,7 +568,7 @@ def print_summary_table(results_df):
           f"(Threshold: {fastest['threshold']}, Window: {fastest['window_size']}, Accuracy: {fastest['accuracy']:.2f}%)")
     
     # Most efficient (high accuracy with low time) - exclude controls for this calculation
-    rolling_only = results_df[results_df['control_type'] == 'None']
+    rolling_only = results_df[results_df['control_type'] == 'None'].copy()
     if not rolling_only.empty:
         rolling_only.loc[:, 'efficiency_score'] = rolling_only['accuracy'] / rolling_only['avg_generation_time']
         most_efficient = rolling_only.loc[rolling_only['efficiency_score'].idxmax()]
